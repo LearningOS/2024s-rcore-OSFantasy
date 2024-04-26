@@ -14,7 +14,7 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
+use crate::config::{MAX_APP_NUM, MAX_SYSCALL_NUM};
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
 use lazy_static::*;
@@ -47,6 +47,17 @@ pub struct TaskManagerInner {
     current_task: usize,
 }
 
+/// Task information
+#[allow(dead_code)]
+pub struct TaskInfo {
+    /// Task status in it's life cycle
+    status: TaskStatus,
+    /// The numbers of syscall called by task
+    syscall_times: [u32; MAX_SYSCALL_NUM],
+    /// Total running time of task
+    time: usize,
+}
+
 lazy_static! {
     /// Global variable: TASK_MANAGER
     pub static ref TASK_MANAGER: TaskManager = {
@@ -70,6 +81,9 @@ lazy_static! {
         }
     };
 }
+
+
+
 
 impl TaskManager {
     /// Run the first task in task list.
@@ -130,10 +144,17 @@ impl TaskManager {
             unsafe {
                 __switch(current_task_cx_ptr, next_task_cx_ptr);
             }
+
             // go back to user mode
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    fn get_current_task_info(&self) -> TaskInfo {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let ststus = inner.tasks[current].task_status;
     }
 }
 
@@ -168,4 +189,9 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// Exit the current 'Running' task and run the next task in task list.
+pub fn get_current_task_status() {
+    TASK_MANAGER.
 }
