@@ -1,6 +1,6 @@
 //! Process management syscalls
 use crate::{
-    task::{exit_current_and_run_next, suspend_current_and_run_next, TaskInfo},
+    task::{exit_current_and_run_next, suspend_current_and_run_next, get_current_task_status, TaskInfo},
     timer::get_time_us,
 };
 
@@ -39,7 +39,13 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
-pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
+pub fn sys_task_info(ti: *mut usize) -> isize {
     trace!("kernel: sys_task_info");
-    -1
+    let ti_ptr = ti as *mut TaskInfo;
+    let task_info = get_current_task_status();
+
+    unsafe {
+        *ti_ptr = task_info;
+    }
+    0
 }
