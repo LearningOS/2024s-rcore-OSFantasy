@@ -29,11 +29,6 @@ impl TaskManager {
     }
 
     pub fn fetch_min_step_and_add_pass(&mut self) -> Option<Arc<TaskControlBlock>> {
-        if self.ready_queue.is_empty() {
-            return None;
-        }
-
-
         let mut min_tcb = self.ready_queue[0].clone();
         let mut min_task = min_tcb.inner_exclusive_access();
         let mut min_stride = min_task.stride;
@@ -55,7 +50,7 @@ impl TaskManager {
         min_task.stride = min_task.stride + BIG_STRIDE / min_task.priority;
         drop(min_task);
 
-        self.add(min_tcb.clone());
+        // self.add(min_tcb.clone());
 
         Some(min_tcb)
     }

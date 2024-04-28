@@ -61,7 +61,7 @@ impl Processor {
         let binding = self.current().unwrap();
         let mut task = binding.inner_exclusive_access();
         let task_start_time = task.task_start_time;
-        let increment_time = get_time_ms()-0;
+        let increment_time = get_time_ms()-task_start_time;
         println!("[Kernel][Task] get_time_ms = {}", get_time_ms());
         println!("[Kernel][Task] task_start_time = {}", task_start_time);
         println!("[Kernel][Task] increment_time = {}", increment_time);
@@ -94,7 +94,7 @@ lazy_static! {
 pub fn run_tasks() {
     loop {
         let mut processor = PROCESSOR.exclusive_access();
-        if let Some(task) = fetch_task() {
+        if let Some(task) = fetch_min_task() {
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
             // access coming task TCB exclusively
             let mut task_inner = task.inner_exclusive_access();
