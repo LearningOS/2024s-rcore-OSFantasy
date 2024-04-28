@@ -51,6 +51,7 @@ impl MemorySet {
     pub fn token(&self) -> usize {
         self.page_table.token()
     }
+
     /// Assume that no conflicts.
     pub fn insert_framed_area(
         &mut self,
@@ -58,17 +59,56 @@ impl MemorySet {
         end_va: VirtAddr,
         permission: MapPermission,
     ) {
+        // println!("[Kernel][Memoryset]start_va = {}", usize::from(start_va));
+        // println!("[Kernel][Memoryset]end_va = {}", usize::from(end_va));
+        // println!("[Kernel][Memoryset]permission = {:?}",permission);
         self.push(
             MapArea::new(start_va, end_va, MapType::Framed, permission),
             None,
         );
     }
-    fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
-        map_area.map(&mut self.page_table);
+
+    pub fn insert_my_area(
+        &mut self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        permission: MapPermission,
+    ) -> isize {
+        // println!("[Kernel][Memoryset]start_va = {}", usize::from(start_va));
+        // println!("[Kernel][Memoryset]end_va = {}", usize::from(end_va));
+        // println!("[Kernel][Memoryset]permission = {:?}",permission);
+        self.push(
+            MapArea::new(start_va, end_va, MapType::Framed, permission),
+            None,
+        )
+    }
+
+    pub fn remove_area(&mut self, start_va: VirtAddr, end_va: VirtAddr) -> isize{
+        let mut result: isize = 0;
+        println!("[Kernel][MemorySet]remove area Start remove for range {:?}-{:?}", start_va, end_va);
+        let mut remove_indices = Vec::new();
+        for (index, area) in self.areas.iter().enumerate() {
+            if area.contains_range(start_va, end_va) {
+                remove_indices.push(index);
+                // println!("[Kernel][MemorySet]find area OK");
+            }
+        }
+
+        for index in remove_indices.iter().rev() {
+            // println!("[Kernel][MemorySet]remove area in index {}", *index);
+            result = self.areas[*index].unmap(&mut self.page_table);
+        }
+        println!("[Kernel][MemorySet]remove area OK");
+        result
+    }
+
+    pub fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> isize{
+        let result = map_area.map(&mut self.page_table);
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data);
         }
         self.areas.push(map_area);
+        result
     }
     /// Mention that trampoline is not collected by areas.
     fn map_trampoline(&mut self) {
@@ -172,6 +212,8 @@ impl MemorySet {
                 if ph_flags.is_execute() {
                     map_perm |= MapPermission::X;
                 }
+                // println!("[Kernel][memory_set]from-elf start_va = {}", usize::from(start_va));
+                // println!("[Kernel][memory_set]from-elf end_va = {}", usize::from(end_va));
                 let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
                 max_end_vpn = map_area.vpn_range.get_end();
                 memory_set.push(
@@ -186,6 +228,8 @@ impl MemorySet {
         // guard page
         user_stack_bottom += PAGE_SIZE;
         let user_stack_top = user_stack_bottom + USER_STACK_SIZE;
+        // println!("[Kernel][memory_set]from-elf user_stack_top = {}", user_stack_top);
+        // println!("[Kernel][memory_set]from-elf user_stack_bottom = {}", user_stack_bottom);
         memory_set.push(
             MapArea::new(
                 user_stack_bottom.into(),
@@ -287,7 +331,7 @@ impl MapArea {
             map_perm,
         }
     }
-    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
+    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) -> isize{
         let ppn: PhysPageNum;
         match self.map_type {
             MapType::Identical => {
@@ -300,37 +344,47 @@ impl MapArea {
             }
         }
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
-        page_table.map(vpn, ppn, pte_flags);
+        page_table.map(vpn, ppn, pte_flags)
     }
     #[allow(unused)]
-    pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
+    pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) -> isize {
         if self.map_type == MapType::Framed {
             self.data_frames.remove(&vpn);
         }
-        page_table.unmap(vpn);
+        page_table.unmap(vpn)
     }
-    pub fn map(&mut self, page_table: &mut PageTable) {
+    pub fn map(&mut self, page_table: &mut PageTable) -> isize {
+        let mut result: isize = 0;
         for vpn in self.vpn_range {
-            self.map_one(page_table, vpn);
+            if self.map_one(page_table, vpn) != 0 {
+                result = -1;
+                break;
+            }
         }
+        result
     }
-    #[allow(unused)]
-    pub fn unmap(&mut self, page_table: &mut PageTable) {
+    // #[allow(unused)]
+    pub fn unmap(&mut self, page_table: &mut PageTable) -> isize {
+        let mut result: isize = 0;
         for vpn in self.vpn_range {
-            self.unmap_one(page_table, vpn);
+            if self.unmap_one(page_table, vpn) != 0 {
+                result = -1;
+                break;
+            }
         }
+        result
     }
     #[allow(unused)]
     pub fn shrink_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(new_end, self.vpn_range.get_end()) {
-            self.unmap_one(page_table, vpn)
+            self.unmap_one(page_table, vpn);
         }
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
     }
     #[allow(unused)]
     pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(self.vpn_range.get_end(), new_end) {
-            self.map_one(page_table, vpn)
+            self.map_one(page_table, vpn);
         }
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
     }
@@ -356,6 +410,13 @@ impl MapArea {
             current_vpn.step();
         }
     }
+
+    /// Check if the virtual address range is fully contained within this MapArea.
+    pub fn contains_range(&self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        let start_vpn = VirtPageNum::from(start_va);
+        let end_vpn = VirtPageNum::from(end_va);
+        self.vpn_range.contains(start_vpn) && self.vpn_range.contains(end_vpn)
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -376,6 +437,16 @@ bitflags! {
         const X = 1 << 3;
         ///Accessible in U mode
         const U = 1 << 4;
+    }
+}
+
+impl MapPermission {
+    /// Tries to convert a `usize` to `PTEFlags`, truncating if necessary.
+    pub fn from_usize(value: usize) -> Self {
+        // Truncate the `usize` to `u8` by casting
+        let truncated_value = value as u8;
+        // SAFETY: We assume that the truncated value is a valid set of flags
+        unsafe { Self::from_bits_unchecked(truncated_value) }
     }
 }
 
@@ -409,4 +480,22 @@ pub fn remap_test() {
         .unwrap()
         .executable(),);
     println!("remap_test passed!");
+}
+
+pub fn m_map(token: usize, start: usize, len: usize, port: usize) -> isize{
+    let flags = MapPermission::from_usize(port);
+    //let mut page_table = PageTable::from_token(token);
+    let mut result = 0;
+    let new_area = MapArea::new(VirtAddr::from(start), VirtAddr::from(start + len), MapType::Framed, flags);
+
+
+
+    result
+}
+
+pub fn m_unmap(token: usize, start: usize, len: usize) -> isize {
+    let mut page_table = PageTable::from_token(token);
+    let mut result = 0;
+
+    result
 }

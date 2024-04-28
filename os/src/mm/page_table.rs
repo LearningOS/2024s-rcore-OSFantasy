@@ -3,7 +3,18 @@
 use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::vec;
 use alloc::vec::Vec;
+use alloc::string::String;
+use core::fmt::Debug;
 use bitflags::*;
+
+bitflags! {
+    /// page table entry flags
+    pub struct MmmapPort: usize {
+        const R = 1 << 0;
+        const W = 1 << 1;
+        const X = 1 << 2;
+    }
+}
 
 bitflags! {
     /// page table entry flags
@@ -18,6 +29,17 @@ bitflags! {
         const D = 1 << 7;
     }
 }
+
+impl PTEFlags {
+    /// Tries to convert a `usize` to `PTEFlags`, truncating if necessary.
+    pub fn from_usize(value: usize) -> Self {
+        // Truncate the `usize` to `u8` by casting
+        let truncated_value = value as u8;
+        // SAFETY: We assume that the truncated value is a valid set of flags
+        unsafe { Self::from_bits_unchecked(truncated_value) }
+    }
+}
+
 
 #[derive(Copy, Clone)]
 #[repr(C)]
@@ -127,17 +149,27 @@ impl PageTable {
     }
     /// set the map between virtual page number and physical page number
     #[allow(unused)]
-    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
+    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) -> isize{
         let pte = self.find_pte_create(vpn).unwrap();
-        assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
+        // assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
+        if pte.is_valid() {
+            println!("vpn is mapped before mapping");
+            return -1
+        }
         *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
+        0
     }
     /// remove the map between virtual page number and physical page number
     #[allow(unused)]
-    pub fn unmap(&mut self, vpn: VirtPageNum) {
+    pub fn unmap(&mut self, vpn: VirtPageNum) -> isize {
         let pte = self.find_pte(vpn).unwrap();
-        assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
+        // assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
+        if !pte.is_valid() {
+            println!("vpn is invalid before unmapping");
+            return -1
+        }
         *pte = PageTableEntry::empty();
+        0
     }
     /// get the page table entry from the virtual page number
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
@@ -155,6 +187,7 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     let mut start = ptr as usize;
     let end = start + len;
     let mut v = Vec::new();
+    // println!("[Kernel][translated_byte_buffer]start = {}, len = {}", start, len);
     while start < end {
         let start_va = VirtAddr::from(start);
         let mut vpn = start_va.floor();
@@ -162,6 +195,9 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         vpn.step();
         let mut end_va: VirtAddr = vpn.into();
         end_va = end_va.min(VirtAddr::from(end));
+
+        // println!("[Kernel][translated_byte_buffer]start_va = {}", usize::from(start_va));
+        // println!("[Kernel][translated_byte_buffer]vpn = {}", usize::from(vpn));
         if end_va.page_offset() == 0 {
             v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..]);
         } else {
@@ -171,3 +207,67 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     }
     v
 }
+
+fn allocate_free_ppn() -> Option<PhysPageNum> {
+    // 调用frame_alloc函数来分配一个空闲的物理页帧
+    frame_alloc().map(|frame| frame.ppn)
+}
+
+pub fn mm_map(token: usize, start: usize, len: usize, port: usize) -> isize{
+    let flags = PTEFlags::from_usize((port << 1) | 0x09);
+    let mut page_table = PageTable::from_token(token);
+    let mut result = 0;
+    println!("[Kernel][mm_map]start = {}, len = {}", start, len);
+    println!("[Kernel][mm_map]flags = {:?}", flags);
+    let mut sta = start;
+    let end = start + len;
+    while sta < end {
+        let start_va = VirtAddr::from(sta);
+        let mut vpn = start_va.floor();
+        vpn.step();
+        let mut end_va: VirtAddr = vpn.into();
+        end_va = end_va.min(VirtAddr::from(end));
+
+        println!("[Kernel][mm_map]start_va = {}", usize::from(start_va));
+        println!("[Kernel][mm_map]vpn = {}", usize::from(vpn));
+
+        if let Some(ppn) = allocate_free_ppn() {
+            page_table.map(vpn, ppn, flags);
+        } else {
+            println!("[Kernel][mm_map]No free physical page available for mapping");
+            result = -1;
+            break;
+        }
+
+        sta = end_va.into();
+        println!("[Kernel][mm_map]end sta = {}\n", usize::from(sta));
+    }
+    println!("[Kernel][mm_map] OK");
+    result
+}
+
+pub fn mm_unmap(token: usize, start: usize, len: usize) -> isize {
+    let mut page_table = PageTable::from_token(token);
+    let mut result = 0;
+    println!("[Kernel][mm_unmap]start = {}, len = {}", start, len);
+    let mut sta = start;
+    let end = start + len;
+    while sta < end {
+        let start_va = VirtAddr::from(sta);
+        let mut vpn = start_va.floor();
+        vpn.step();
+        let mut end_va: VirtAddr = vpn.into();
+        end_va = end_va.min(VirtAddr::from(end));
+
+        println!("[Kernel][mm_unmap]start_va = {}", usize::from(start_va));
+        println!("[Kernel][mm_unmap]vpn = {}", usize::from(vpn));
+
+        page_table.unmap(vpn);
+
+        sta = end_va.into();
+        println!("[Kernel][mm_unmap]end sta = {}\n", usize::from(sta));
+    }
+    println!("[Kernel][mm_unmap] OK");
+    result
+}
+

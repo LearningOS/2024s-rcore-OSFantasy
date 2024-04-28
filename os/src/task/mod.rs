@@ -17,10 +17,11 @@ mod task;
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
+use crate::timer::get_time_ms;
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
-pub use task::{TaskControlBlock, TaskStatus};
+pub use task::{TaskControlBlock, TaskStatus, TaskInfo};
 
 pub use context::TaskContext;
 
@@ -79,6 +80,7 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+        next_task.task_start_time = get_time_ms();
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -153,6 +155,45 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    fn update_task_info(&self, syscall: usize, add_flag: bool) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let task_status = inner.tasks[current].task_status;
+        inner.tasks[current].task_info.set_status(task_status);
+        if add_flag {
+            inner.tasks[current].task_info.add_syscall_time(syscall);
+        }
+
+    }
+
+    fn get_current_task_info(&self) -> TaskInfo {
+        self.update_task_info(0,false);
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let task_start_time = inner.tasks[current].task_start_time;
+        let increment_time = get_time_ms()-0;
+        println!("[Kernel][Task] get_time_ms = {}", get_time_ms());
+        println!("[Kernel][Task] task_start_time = {}", task_start_time);
+        println!("[Kernel][Task] increment_time = {}", increment_time);
+        inner.tasks[current].task_info.increment_time(increment_time);
+        let task_info = inner.tasks[current].task_info;
+        task_info
+    }
+
+    fn current_task_m_map(&self, start: usize, len: usize, port: usize) -> isize {
+        println!("[Kernel][task/mod]m_map");
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].m_map(start, len, port)
+    }
+
+    fn current_task_m_unmap(&self, start: usize, len: usize) -> isize {
+        println!("[Kernel][task/mod]m_unmap");
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].m_unmap(start, len)
+    }
 }
 
 /// Run the first task in task list.
@@ -201,4 +242,21 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Exit the current 'Running' task and run the next task in task list.
+pub fn get_current_task_status() -> TaskInfo {
+    TASK_MANAGER.get_current_task_info()
+}
+
+pub fn add_task_syscall_times(syscall: usize){
+    TASK_MANAGER.update_task_info(syscall, true);
+}
+
+pub fn current_task_m_map(start: usize, len: usize, port: usize) -> isize {
+    TASK_MANAGER.current_task_m_map(start, len, port)
+}
+
+pub fn current_task_m_unmap(start: usize, len: usize) -> isize {
+    TASK_MANAGER.current_task_m_unmap(start, len)
 }
