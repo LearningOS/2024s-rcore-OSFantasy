@@ -19,3 +19,5 @@ tools/
 pushall.sh
 .vscode/*.log
 *.bak
+
+user
