@@ -3,7 +3,7 @@
 //! It is only used to manage processes and schedule process based on ready queue.
 //! Other CPU process monitoring functions are in Processor.
 
-use super::{ProcessControlBlock, TaskControlBlock, TaskStatus};
+use super::{current_process, current_task, ProcessControlBlock, TaskControlBlock, TaskStatus};
 use crate::sync::UPSafeCell;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
@@ -34,12 +34,25 @@ impl TaskManager {
         self.ready_queue.pop_front()
     }
     pub fn remove(&mut self, task: Arc<TaskControlBlock>) {
-        if let Some((id, _)) = self
+        if let Some((id, f_task)) = self
             .ready_queue
             .iter()
             .enumerate()
             .find(|(_, t)| Arc::as_ptr(t) == Arc::as_ptr(&task))
         {
+            let tid = f_task
+                .inner_exclusive_access()
+                .res
+                .as_ref()
+                .unwrap()
+                .tid;
+            let process = task.process.upgrade().unwrap();
+            let mut process_inner = process.inner_exclusive_access();
+
+            process_inner.work[0] += process_inner.allocation[tid][0];
+            process_inner.work[1] += process_inner.allocation[tid][1];
+            process_inner.finish[tid] = true;
+
             self.ready_queue.remove(id);
         }
     }
@@ -49,6 +62,41 @@ impl TaskManager {
         // using kernel stack any more, at least in the single-core
         // case) so that we can simply replace it;
         self.stop_task = Some(task);
+    }
+
+    pub fn fetch_work(&mut self) -> Option<Arc<TaskControlBlock>> {
+        let mut task_to_remove = None;
+        for (index, task) in self.ready_queue.iter().enumerate() {
+            let tid = task
+                .inner_exclusive_access()
+                .res
+                .as_ref()
+                .unwrap()
+                .tid;
+            let mut process = task.process.upgrade().unwrap();
+            let mut process_inner = process.inner_exclusive_access();
+
+            // println!("[kernel][manager][fetch_work] sys_mutex_lock process_inner.available[0] = {}", process_inner.available[0]);
+
+            if process_inner.finish[tid] == false && process_inner.work[0] >= process_inner.need[tid][0] && process_inner.work[1] >= process_inner.need[tid][1] {
+                process_inner.work[0] -= process_inner.need[tid][0];
+                process_inner.work[1] -= process_inner.need[tid][1];
+                process_inner.allocation[tid][0] += process_inner.need[tid][0];
+                process_inner.allocation[tid][1] += process_inner.need[tid][1];
+                process_inner.need[tid][0] = 0;
+                process_inner.need[tid][1] = 0;
+                task_to_remove = Some(index);
+                break;
+            }
+        }
+
+        if let Some(index) = task_to_remove {
+            let task = Some(self.ready_queue[index].clone());
+            self.ready_queue.remove(index);
+            return task;
+        }
+
+        self.ready_queue.pop_front()
     }
 
 }
@@ -111,4 +159,9 @@ pub fn remove_from_pid2process(pid: usize) {
     if map.remove(&pid).is_none() {
         panic!("cannot find pid {} in pid2task!", pid);
     }
+}
+
+pub fn fetch_work_task() -> Option<Arc<TaskControlBlock>> {
+    //trace!("kernel: TaskManager::fetch_task");
+    TASK_MANAGER.exclusive_access().fetch_work()
 }

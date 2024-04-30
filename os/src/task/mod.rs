@@ -25,7 +25,7 @@ use crate::task::manager::add_stopping_task;
 use crate::timer::remove_timer;
 use alloc::{sync::Arc, vec::Vec};
 use lazy_static::*;
-use manager::fetch_task;
+use manager::{fetch_task, fetch_work_task};
 use process::ProcessControlBlock;
 use switch::__switch;
 
